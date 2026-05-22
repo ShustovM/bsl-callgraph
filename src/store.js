@@ -129,6 +129,22 @@ class CallGraphStore {
     return results;
   }
 
+  // Search symbols by partial name (substring, case-insensitive)
+  searchSymbols(query, module) {
+    const q = query.toLowerCase();
+    const results = [];
+    for (const [nameLower, procs] of this._byName) {
+      if (nameLower.includes(q)) {
+        for (const p of procs) {
+          if (!module || p.module.toLowerCase() === module.toLowerCase()) {
+            results.push(p);
+          }
+        }
+      }
+    }
+    return results;
+  }
+
   // Get impact radius: all procedures that transitively call the given one
   // depth: max recursion depth (default 5)
   getImpact(name, module, depth = 5) {

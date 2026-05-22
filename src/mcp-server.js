@@ -69,6 +69,34 @@ server.tool(
   }
 );
 
+// ── search_symbols ───────────────────────────────────────────────────────────
+server.tool(
+  'search_symbols',
+  'Search BSL procedures/functions by partial name (substring, case-insensitive). Use when you don\'t know the exact name.',
+  {
+    query: z.string().describe('Partial name to search for (case-insensitive substring)'),
+    module: z.string().optional().describe('Module name to narrow search (optional)'),
+    limit: z.number().int().min(1).max(200).optional().describe('Max results to return (default 50)'),
+  },
+  async ({ query, module, limit = 50 }) => {
+    const busy = notReadyMsg(); if (busy) return busy;
+    const results = store.searchSymbols(query, module);
+    if (results.length === 0) {
+      return { content: [{ type: 'text', text: `No symbols matching "${query}" found.` }] };
+    }
+    const shown = results.slice(0, limit);
+    const text = shown
+      .map(p =>
+        `${p.kind.toUpperCase()} ${p.module}.${p.name}` +
+        (p.isExport ? ' [Экспорт]' : '') +
+        `\n  File: ${p.file}:${p.line}`
+      )
+      .join('\n\n');
+    const footer = results.length > limit ? `\n\n... и ещё ${results.length - limit} (уточни запрос)` : '';
+    return { content: [{ type: 'text', text: `Found ${results.length} matches for "${query}":\n\n${text}${footer}` }] };
+  }
+);
+
 // ── get_callers ──────────────────────────────────────────────────────────────
 server.tool(
   'get_callers',
