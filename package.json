@@ -1,0 +1,16 @@
+{
+  "name": "bsl-callgraph",
+  "version": "1.0.0",
+  "description": "BSL (1C:Enterprise) call-graph MCP server for AI agents",
+  "main": "src/mcp-server.js",
+  "scripts": {
+    "start": "node src/mcp-server.js",
+    "test": "node test/test-parser.js"
+  },
+  "keywords": ["1c", "bsl", "callgraph", "mcp"],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.22.0"
+  }
+}
