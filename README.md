@@ -204,11 +204,12 @@ targets, and source location; they are not silently treated as proven impact.
 
 ## Accuracy and performance boundaries
 
-BSL CallGraph recognizes Russian and English `Procedure`/`Function` declarations
-and `Export`, including multiline signatures. Its stateful lexer carries BSL
-string and `//` comment state across lines and handles doubled quotes, so query
-text does not become graph edges. Calls are collected as candidates and resolved
-only after every module is known. Static analysis still has important limits:
+BSL CallGraph recognizes Russian and English `Procedure`/`Function` declarations,
+`Async`, and `Export`, including multiline signatures. Its stateful lexer
+carries BSL string and `//` comment state across lines, handles doubled quotes,
+and accepts comment lines between `|`-prefixed string fragments, so query text
+does not become graph edges. Calls are collected as candidates and resolved only
+after every module is known. Static analysis still has important limits:
 
 - dynamic dispatch and values stored in variables may not resolve to one target;
 - duplicate symbol or module display names can be ambiguous;

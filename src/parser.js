@@ -22,6 +22,7 @@ const END_KEYWORDS = new Map([
 ]);
 
 const EXPORT_KEYWORDS = new Set(['экспорт', 'export']);
+const ASYNC_KEYWORDS = new Set(['асинх', 'async']);
 
 // Language statements and operators which can syntactically precede `(` but
 // never represent a procedure/function call.
@@ -31,11 +32,13 @@ const BSL_KEYWORDS = new Set([
   'попытка', 'исключение', 'вызватьисключение', 'конецпопытки',
   'возврат', 'прервать', 'продолжить', 'новый', 'не', 'и', 'или',
   'процедура', 'функция', 'конецпроцедуры', 'конецфункции', 'экспорт',
+  'асинх',
   'перем', 'знч', 'знач', 'истина', 'ложь', 'неопределено', 'null',
   'if', 'elseif', 'then', 'else', 'endif', 'while', 'do', 'enddo',
   'for', 'each', 'in', 'to', 'try', 'except', 'raise', 'endtry',
   'return', 'break', 'continue', 'new', 'not', 'and', 'or',
   'procedure', 'function', 'endprocedure', 'endfunction', 'export',
+  'async',
   'var', 'val', 'true', 'false', 'undefined', 'typeof',
 ]);
 
@@ -53,6 +56,26 @@ function previousSignificant(tokens, startIndex) {
   let index = startIndex;
   while (tokens[index]?.type === 'newline') index--;
   return index;
+}
+
+function isFirstSignificantOnLine(tokens, index) {
+  const token = tokens[index];
+  const previous = tokens[previousSignificant(tokens, index - 1)];
+  return !previous || previous.line < token.line;
+}
+
+function isDeclarationStart(tokens, index) {
+  if (isFirstSignificantOnLine(tokens, index)) return true;
+
+  const token = tokens[index];
+  const previousIndex = previousSignificant(tokens, index - 1);
+  const previous = tokens[previousIndex];
+  if (previous?.line !== token.line
+      || previous.type !== 'identifier'
+      || !ASYNC_KEYWORDS.has(foldIdentifier(previous.value))) {
+    return false;
+  }
+  return isFirstSignificantOnLine(tokens, previousIndex);
 }
 
 function diagnostic(code, message, token, extra = {}) {
@@ -174,7 +197,7 @@ function parseDeclaration(tokens, index, moduleIdentity, filePath, diagnostics) 
   };
 }
 
-function callCandidate(tokens, index, currentProcedure, moduleIdentity, filePath, occurrence) {
+function callCandidate(tokens, index, currentProcedure, occurrence) {
   const nameToken = tokens[index];
   const openIndex = nextSignificant(tokens, index + 1);
   if (tokens[openIndex]?.value !== '(') return null;
@@ -182,39 +205,21 @@ function callCandidate(tokens, index, currentProcedure, moduleIdentity, filePath
 
   const dotIndex = previousSignificant(tokens, index - 1);
   let receiver = null;
-  let receiverToken = null;
   if (tokens[dotIndex]?.value === '.') {
     const receiverIndex = previousSignificant(tokens, dotIndex - 1);
     if (tokens[receiverIndex]?.type === 'identifier') {
       receiver = tokens[receiverIndex].value;
-      receiverToken = tokens[receiverIndex];
     }
   }
 
-  const startToken = receiverToken || nameToken;
-  const callerId = currentProcedure.id;
   return {
-    id: `candidate:${callerId}:${filePath}:${nameToken.line}:${nameToken.column}:${occurrence}`,
-    callerId,
-    callerName: currentProcedure.name,
-    callerModuleId: moduleIdentity.id,
-    callerModule: moduleIdentity.displayName,
-    callerModuleDisplayName: moduleIdentity.displayName,
+    callerId: currentProcedure.id,
     calleeName: nameToken.value,
-    // Kept for old consumers. A receiver is not a module until the resolver
-    // proves that it identifies one.
     calleeModule: null,
-    calleeModuleId: null,
     receiver,
     callLine: nameToken.line,
     callColumn: nameToken.column,
-    callEndLine: nameToken.endLine,
-    callEndColumn: nameToken.endColumn,
-    file: filePath,
-    location: {
-      start: startToken.location.start,
-      end: nameToken.location.end,
-    },
+    occurrence,
   };
 }
 
@@ -241,7 +246,7 @@ function parseFile(content, filePath) {
     }
 
     const normalized = foldIdentifier(token.value);
-    if (DECLARATION_KEYWORDS.has(normalized)) {
+    if (DECLARATION_KEYWORDS.has(normalized) && isDeclarationStart(tokens, index)) {
       if (currentProcedure) {
         diagnostics.push(diagnostic(
           'unclosed-procedure',
@@ -267,7 +272,7 @@ function parseFile(content, filePath) {
       continue;
     }
 
-    if (END_KEYWORDS.has(normalized)) {
+    if (END_KEYWORDS.has(normalized) && isFirstSignificantOnLine(tokens, index)) {
       if (!currentProcedure) {
         diagnostics.push(diagnostic(
           'unmatched-procedure-end',
@@ -292,8 +297,6 @@ function parseFile(content, filePath) {
         tokens,
         index,
         currentProcedure,
-        moduleIdentity,
-        filePath,
         occurrence
       );
       if (candidate) {

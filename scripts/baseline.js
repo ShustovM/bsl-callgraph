@@ -98,6 +98,7 @@ function main() {
       files: result.stats.files,
       procedures: result.stats.procedures,
       calls: result.stats.calls,
+      resolution: result.stats.resolution,
       errors: result.stats.errors,
     },
     indexingMilliseconds: {

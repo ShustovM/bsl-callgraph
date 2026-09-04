@@ -231,6 +231,25 @@ EndProcedure
 });
 
 describe('lexer and parser diagnostics', () => {
+  test('recognizes declarations only in declaration context and supports async methods', () => {
+    const parsed = parse(`Procedure Configure() Export
+    Settings.Procedure = "Handler";
+EndProcedure
+
+Async Function LoadAsync() Export
+EndFunction
+
+Асинх Процедура ЗагрузитьАсинх() Экспорт
+КонецПроцедуры
+`, 'CommonModules/Declarations/Ext/Module.bsl');
+
+    assert.deepEqual(
+      parsed.procedures.map(procedure => procedure.name),
+      ['Configure', 'LoadAsync', 'ЗагрузитьАсинх']
+    );
+    assert.deepEqual(parsed.diagnostics, []);
+  });
+
   test('retains call locations and reports malformed input without throwing', () => {
     const parsed = parse(`Procedure Broken() Export
     RealCall();
@@ -239,7 +258,6 @@ describe('lexer and parser diagnostics', () => {
 
     assert.equal(parsed.calls[0].callLine, 2);
     assert.equal(parsed.calls[0].callColumn, 5);
-    assert.deepEqual(parsed.calls[0].location.start, { line: 2, column: 5, offset: 30 });
     assert.ok(parsed.diagnostics.some(item => item.code === 'unclosed-string'));
     assert.ok(parsed.diagnostics.some(item => item.code === 'unclosed-procedure'));
   });

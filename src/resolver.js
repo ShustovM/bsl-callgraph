@@ -66,8 +66,14 @@ function buildSymbolTable(procedures) {
   const exportedByName = new Map();
   const modulesByAlias = new Map();
   const moduleRecords = new Map();
+  const byId = new Map();
+  const provenanceById = new Map();
+  const singletonCandidateIds = new Map();
 
   for (const procedure of normalizedProcedures) {
+    byId.set(procedure.id, procedure);
+    provenanceById.set(procedure.id, Object.freeze(targetProvenance(procedure)));
+    singletonCandidateIds.set(procedure.id, Object.freeze([procedure.id]));
     addToMap(
       byModuleAndName,
       `${foldIdentifier(procedure.moduleId)}::${procedure.normalizedName}`,
@@ -94,6 +100,9 @@ function buildSymbolTable(procedures) {
 
   return {
     procedures: normalizedProcedures,
+    byId,
+    provenanceById,
+    singletonCandidateIds,
     byModuleAndName,
     exportedByName,
     modulesByAlias,
@@ -110,7 +119,7 @@ function uniqueProcedures(procedures) {
 function resolutionFor(candidate, symbolTable) {
   const name = foldIdentifier(candidate.calleeName);
   const callerModuleId = candidate.callerModuleId
-    || symbolTable.procedures.find(proc => proc.id === candidate.callerId)?.moduleId
+    || symbolTable.byId.get(candidate.callerId)?.moduleId
     || `module:${foldIdentifier(candidate.callerModule || '')}`;
 
   if (!candidate.receiver) {
@@ -183,36 +192,50 @@ function resolutionFor(candidate, symbolTable) {
 }
 
 function compareCalls(left, right) {
-  return compareText(left.callerModuleId, right.callerModuleId)
+  return compareText(left.callerId, right.callerId)
+    || compareText(left.callerModuleId, right.callerModuleId)
     || compareText(foldIdentifier(left.callerName), foldIdentifier(right.callerName))
     || compareText(left.file, right.file)
     || (left.callLine || 0) - (right.callLine || 0)
     || (left.callColumn || 0) - (right.callColumn || 0)
     || compareText(foldIdentifier(left.calleeName), foldIdentifier(right.calleeName))
     || compareText(left.receiver, right.receiver)
+    || (left.occurrence || 0) - (right.occurrence || 0)
     || compareText(left.id, right.id);
 }
 
-function makeEdge(candidate, result, ordinal) {
+const EMPTY_CANDIDATES = Object.freeze([]);
+
+function makeEdge(candidate, result, ordinal, symbolTable) {
   const target = result.resolution === 'resolved' ? result.targets[0] : null;
-  const targetDetails = result.targets.map(targetProvenance);
-  const callerModuleId = candidate.callerModuleId || null;
+  const caller = symbolTable.byId.get(candidate.callerId);
+  const targetDetails = result.resolution === 'ambiguous'
+    ? result.targets.map(procedure => symbolTable.provenanceById.get(procedure.id))
+    : EMPTY_CANDIDATES;
   const callLine = candidate.callLine || candidate.line || 1;
   const callColumn = candidate.callColumn || candidate.column || 1;
   return {
-    ...candidate,
-    id: `edge:${candidate.callerId || `${callerModuleId}:${candidate.callerName}`}:${callLine}:${callColumn}:${ordinal}`,
+    id: `edge:${ordinal.toString(36)}`,
+    callerId: candidate.callerId || null,
+    callerName: caller?.name || candidate.callerName || null,
+    callerModuleId: caller?.moduleId || candidate.callerModuleId || null,
+    callerModule: caller?.moduleDisplayName || caller?.module || candidate.callerModule || null,
+    calleeName: candidate.calleeName,
+    receiver: candidate.receiver || null,
+    file: caller?.file || candidate.file || null,
+    callLine,
+    callColumn,
     resolution: result.resolution,
     reason: result.reason,
-    resolutionReason: result.reason,
     confidence: result.confidence,
     calleeId: target?.id || null,
-    calleeModuleId: target?.moduleId || null,
-    calleeModule: target ? target.moduleDisplayName || target.module : null,
-    calleeFile: target?.file || null,
-    calleeLine: target?.line || null,
-    target: target ? targetProvenance(target) : null,
-    candidates: targetDetails.map(item => item.id),
+    calleeModule: null,
+    target: target ? symbolTable.provenanceById.get(target.id) : null,
+    candidates: target
+      ? symbolTable.singletonCandidateIds.get(target.id)
+      : targetDetails.length > 0
+        ? targetDetails.map(item => item.id)
+        : EMPTY_CANDIDATES,
     candidateTargets: targetDetails,
   };
 }
@@ -230,9 +253,14 @@ function resolveCalls(proceduresOrIndex, callsArgument) {
     : proceduresOrIndex?.calls || [];
   const symbolTable = buildSymbolTable(procedures);
   const orderedCandidates = [...calls].sort(compareCalls);
-  return orderedCandidates.map((candidate, ordinal) =>
-    makeEdge(candidate, resolutionFor(candidate, symbolTable), ordinal)
+  const edges = orderedCandidates.map((candidate, ordinal) =>
+    makeEdge(candidate, resolutionFor(candidate, symbolTable), ordinal, symbolTable)
   );
+  Object.defineProperty(edges, 'canonicalSorted', {
+    value: true,
+    enumerable: false,
+  });
+  return edges;
 }
 
 const resolveCallCandidates = resolveCalls;

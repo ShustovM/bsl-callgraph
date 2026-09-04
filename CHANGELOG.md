@@ -27,6 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Exact dependency and impact queries now exclude ambiguous/dynamic candidates
   unless exploratory mode is explicitly requested.
 
+### Fixed
+
+- Multiline BSL string fragments, including intervening comment lines, no
+  longer produce query-language calls.
+- `Procedure`/`Function` property names no longer disrupt declaration parsing;
+  Russian and English async declarations are recognized explicitly.
+
 ## [1.0.0] - 2026-05-23
 
 ### Added

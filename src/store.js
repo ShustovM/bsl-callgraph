@@ -199,10 +199,13 @@ class CallGraphStore {
     sortIndex(this._byName, compareProcedures);
     sortIndex(this._byModule, compareProcedures);
 
-    const normalizedCalls = calls.map(call => this._normalizeEdge(call)).sort(compareEdges);
+    const callsAreCanonical = calls.canonicalSorted === true;
+    // Resolver output is already canonical. Query indexes are sorted for
+    // manual/legacy input only, avoiding duplicate work for large generations.
+    const normalizedCalls = calls.map(call => this._normalizeEdge(call));
     const seenEdges = new Set();
     for (const edge of normalizedCalls) {
-      const identity = edgeIdentity(edge);
+      const identity = edge.id ? normalizeKey(edge.id) : edgeIdentity(edge);
       if (seenEdges.has(identity)) continue;
       seenEdges.add(identity);
       this.calls.push(edge);
@@ -229,11 +232,13 @@ class CallGraphStore {
       }
     }
 
-    sortIndex(this._callsByCallerId, compareEdges);
-    sortIndex(this._callsByCalleeId, compareEdges);
-    sortIndex(this._candidateCallsByCalleeId, compareEdges);
-    sortIndex(this._fallbackCallsByCallerName, compareEdges);
-    sortIndex(this._fallbackCallsByCalleeName, compareEdges);
+    if (!callsAreCanonical) {
+      sortIndex(this._callsByCallerId, compareEdges);
+      sortIndex(this._callsByCalleeId, compareEdges);
+      sortIndex(this._candidateCallsByCalleeId, compareEdges);
+      sortIndex(this._fallbackCallsByCallerName, compareEdges);
+      sortIndex(this._fallbackCallsByCalleeName, compareEdges);
+    }
   }
 
   _procedureById(id) {

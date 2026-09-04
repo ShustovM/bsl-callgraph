@@ -102,7 +102,14 @@ function procedureView(procedure) {
 }
 
 function edgeView(edge) {
-  const candidates = (edge.candidateTargets || edge.candidates || [])
+  const rawCandidates = edge.candidateTargets?.length
+    ? edge.candidateTargets
+    : edge.candidates?.length
+      ? edge.candidates
+      : edge.target
+        ? [edge.target]
+        : [];
+  const candidates = rawCandidates
     .slice(0, MAX_OUTPUT_CANDIDATES)
     .map(candidate => typeof candidate === 'string' ? { id: candidate } : candidate);
   return {
@@ -129,8 +136,8 @@ function edgeView(edge) {
       receiver: edge.receiver || null,
     },
     candidates,
-    candidateCount: (edge.candidateTargets || edge.candidates || []).length,
-    candidatesTruncated: (edge.candidateTargets || edge.candidates || []).length > candidates.length,
+    candidateCount: rawCandidates.length,
+    candidatesTruncated: rawCandidates.length > candidates.length,
     provenance: {
       file: edge.file || edge.callerFile || null,
       line: edge.callLine || 1,

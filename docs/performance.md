@@ -31,11 +31,35 @@ On 2026-09-04, the default profile on Node.js 22.15.0, Windows x64 produced:
 | Files | 500 |
 | Procedures/functions | 10,000 |
 | Call candidates | 10,500 |
-| Corpus generation | 763.785 ms |
-| Indexing | 552.389 ms |
-| Store load | 350.286 ms |
-| Mean lookup operation (3,000 operations) | 0.019 ms |
-| Sampled peak RSS delta | 54.64 MiB |
+| Corpus generation | 802.196 ms |
+| Indexing | 569.018 ms |
+| Store load | 263.393 ms |
+| Mean lookup operation (3,000 operations) | 0.030 ms |
+| Sampled peak RSS delta | 44.34 MiB |
 
 This is a reference measurement, not a performance guarantee. Release-gate
 runs should retain their own JSON output as CI artifacts when practical.
+
+## 1.1.0 large-corpus release check
+
+A local release-gate run on 2026-09-04 used the same non-public BSL export as
+the pre-hardening baseline. Only aggregate values are recorded here; no source
+path, file, module, or symbol name is retained.
+
+| Metric | 1.0.0 baseline | 1.1.0 release candidate |
+|---|---:|---:|
+| Files | 11,034 | 11,034 |
+| Procedures/functions | 125,048 | 125,540 |
+| Call candidates | 1,050,155 | 981,818 |
+| Resolved / ambiguous / dynamic | not classified | 276,249 / 9,391 / 696,178 |
+| Parser diagnostics | not recorded | 0 |
+| Approximate indexing time | 15 s | 34.993 s |
+| Graph-store load time | not recorded | 26.243 s |
+| Mean lookup operation (3,000 operations) | not recorded | 0.023 ms |
+| RSS after graph-store load | not recorded | 1.223 GiB |
+
+The count changes are expected: query-string calls are now excluded, property
+names no longer disrupt declaration parsing, and every remaining call is
+classified explicitly. The older implementation did substantially less work,
+so its indexing time is contextual rather than a performance target. These are
+single local observations affected by filesystem cache and machine load.

@@ -35,6 +35,26 @@ function lexBsl(source) {
   let state = 'code';
   let stringStart = null;
 
+  const addUnclosedStringDiagnostic = (endLine, endColumn, endOffset) => {
+    if (!stringStart) return;
+    diagnostics.push({
+      code: 'unclosed-string',
+      severity: 'warning',
+      message: 'String literal is not closed before the end of the line or file.',
+      line: stringStart.line,
+      column: stringStart.column,
+      location: location(
+        stringStart.line,
+        stringStart.column,
+        endLine,
+        endColumn,
+        stringStart.offset,
+        endOffset
+      ),
+    });
+    stringStart = null;
+  };
+
   const addNewline = (startOffset, startLine, startColumn, width) => {
     tokens.push({
       type: 'newline',
@@ -73,10 +93,47 @@ function lexBsl(source) {
     if (character === '\r' || character === '\n') {
       consumeNewline();
       if (state === 'comment') state = 'code';
+      else if (state === 'string') state = 'string-continuation';
+      else if (state === 'string-continuation-comment') {
+        state = 'string-continuation';
+      }
       continue;
     }
 
     if (state === 'comment') {
+      index++;
+      column++;
+      continue;
+    }
+
+    // A BSL multiline string continues on a line whose first non-whitespace
+    // character is `|`. Full-line comments may appear between such fragments
+    // and must not affect quote balancing inside the string.
+    if (state === 'string-continuation') {
+      if (character === ' ' || character === '\t' || character === '\f') {
+        index++;
+        column++;
+        continue;
+      }
+      if (character === '/' && text[index + 1] === '/') {
+        state = 'string-continuation-comment';
+        index += 2;
+        column += 2;
+        continue;
+      }
+      if (character === '|') {
+        state = 'string';
+        index++;
+        column++;
+        continue;
+      }
+
+      addUnclosedStringDiagnostic(line, column, index);
+      state = 'code';
+      continue;
+    }
+
+    if (state === 'string-continuation-comment') {
       index++;
       column++;
       continue;
@@ -159,22 +216,9 @@ function lexBsl(source) {
     column++;
   }
 
-  if (state === 'string' && stringStart) {
-    diagnostics.push({
-      code: 'unclosed-string',
-      severity: 'warning',
-      message: 'String literal is not closed before the end of the file.',
-      line: stringStart.line,
-      column: stringStart.column,
-      location: location(
-        stringStart.line,
-        stringStart.column,
-        line,
-        column,
-        stringStart.offset,
-        text.length
-      ),
-    });
+  if ((state === 'string' || state === 'string-continuation'
+      || state === 'string-continuation-comment') && stringStart) {
+    addUnclosedStringDiagnostic(line, column, text.length);
   }
 
   return { tokens, diagnostics };
