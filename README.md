@@ -1,300 +1,294 @@
-# BSL Call-Graph MCP Server
+# BSL CallGraph MCP Server
 
-MCP-сервер для семантической навигации по коду на языке 1С:Предприятие (BSL).  
-Даёт Claude Code и другим AI-агентам мгновенный доступ к граф вызовов всей конфигурации без чтения файлов.
+BSL CallGraph is a local stdio MCP server for navigating call relationships in
+1C:Enterprise (BSL) source exports. It indexes `.bsl` files in memory and gives
+an MCP client compact tools for finding definitions, callers, callees, and a
+transitive impact set.
 
----
+The analyzer is static and intentionally lightweight. It helps explore large
+repositories without repeatedly opening many files, but it is not a BSL
+compiler or a complete type-inference engine. Treat graph results as navigation
+evidence and review the relevant source before making a high-risk change.
 
-## Зачем это нужно
+## Requirements
 
-При работе с большой конфигурацией 1С агент обычно вынужден открывать десятки BSL-файлов, чтобы понять:
-- Где определена нужная процедура?
-- Кто её вызывает?
-- Что она сама вызывает?
-- Какие модули затронет изменение?
+- Node.js 22 or 24
+- npm
+- A readable directory containing exported `.bsl` files
 
-Без инструмента каждый такой поиск — это десятки тысяч токенов и несколько секунд ожидания.
+No C++ toolchain, Java runtime, database, or network connection is required at
+runtime.
 
-**BSL Call-Graph MCP** решает эту задачу: при старте он индексирует все `.bsl`-файлы конфигурации в памяти (10 000+ файлов — за ~15 сек), после чего любой запрос к графу вызовов отвечает за миллисекунды и стоит 1–2 инструмент-вызова вместо 20–50 чтений файлов.
+## Install from source
 
----
-
-## Преимущества
-
-| Было (без MCP) | Стало (с MCP) |
-|---|---|
-| Прочитать 10–30 файлов чтобы найти определение | 1 вызов `find_symbol` |
-| Не знаешь точное название — grep по тысячам файлов | 1 вызов `search_symbols` |
-| Вручную искать кто вызывает функцию | 1 вызов `get_callers` |
-| Угадывать область влияния изменения | 1 вызов `get_impact` |
-| ~50 000 токенов на анализ зависимостей | ~200 токенов |
-| Медленная навигация по большой конфигурации | Мгновенный ответ из памяти |
-
-**Конкретные выгоды:**
-- **Экономия токенов** — семантический поиск вместо чтения файлов
-- **Скорость** — O(1) поиск по in-memory индексу (1 млн+ вызовов)
-- **Точность** — граф строится по реальному коду, не по именам файлов
-- **Кириллица** — полная поддержка русских идентификаторов BSL
-- **Двуязычность** — понимает и русские, и английские ключевые слова 1С
-- **Нет компиляции** — чистый JS, не нужны C++ тулчейны
-- **Неблокирующий старт** — MCP handshake мгновенный, индексация идёт в фоне
-
----
-
-## Инструменты
-
-### `find_symbol`
-Найти определение процедуры или функции по имени.
-
-**Параметры:**
-- `name` (обязательный) — имя процедуры/функции, регистронезависимо
-- `module` (опциональный) — фильтр по модулю (если имя встречается в нескольких)
-
-**Возвращает:** модуль, файл, номер строки, тип (процедура/функция), признак Экспорт.
-
-**Пример:**
-```
-find_symbol("ЗаписатьДокумент")
-→ PROCEDURE ПродажаТоваров.ЗаписатьДокумент [Экспорт]
-    File: Documents\ПродажаТоваров\Ext\ObjectModule.bsl:142
-```
-
----
-
-### `search_symbols`
-Найти процедуры и функции по **части имени** (подстрока, регистронезависимо). Использовать когда точное название неизвестно.
-
-**Параметры:**
-- `query` (обязательный) — часть имени для поиска
-- `module` (опциональный) — фильтр по модулю
-- `limit` (опциональный, 1–200, по умолчанию 50) — максимальное количество результатов
-
-**Возвращает:** список совпадающих процедур/функций с файлами и строками.
-
-**Пример:**
-```
-search_symbols("ЗаписатьДок")
-→ Found 34 matches for "ЗаписатьДок":
-  PROCEDURE ФормаДокумента.ЗаписатьДокумент
-    File: Documents\ВизитВРегистратуру\Forms\ФормаДокумента\Ext\Form\Module.bsl:1184
-  PROCEDURE тмб_ИммунопрофилактикаСервер.ЗаписатьДокументПланированияИммунопрофилактики [Экспорт]
-    File: CommonModules\тмб_ИммунопрофилактикаСервер\Ext\Module.bsl:1774
-  ... (ещё 32 совпадения)
-```
-
----
-
-### `get_callers`
-Найти все процедуры и функции, которые вызывают данный символ.
-
-**Параметры:**
-- `name` (обязательный) — имя вызываемой процедуры/функции
-- `module` (опциональный) — модуль-владелец символа (для устранения неоднозначности)
-
-**Возвращает:** список вызывающих с номерами строк, сгруппированный по процедуре.
-
-**Пример:**
-```
-get_callers("ОбщаяФункция", "ОбщийМодульБСП")
-→ Callers of "ОбщаяФункция":
-  ПродажаТоваров.ПровестиДокумент  (line 78)
-  ПоступлениеТоваров.ПровестиДокумент  (line 91)
-  ОбщийМодульБСП.ЗаписатьЛог  (line 23)
-```
-
----
-
-### `get_callees`
-Найти все процедуры и функции, которые данный символ вызывает сам.
-
-**Параметры:**
-- `name` (обязательный) — имя процедуры/функции
-- `module` (опциональный) — модуль-владелец
-
-**Возвращает:** список зависимостей с номерами строк.
-
-**Пример:**
-```
-get_callees("ПровестиДокумент", "ПродажаТоваров")
-→ "ПровестиДокумент" calls:
-  ОбщийМодульБСП.ОбщаяФункция  (line 78)
-  ЗаписатьВРегистр  (line 95)
-  ПроверитьОстатки  (line 102)
-```
-
----
-
-### `get_impact`
-Транзитивный анализ влияния — найти все процедуры, которые **косвенно** зависят от данного символа (полный радиус изменения).
-
-**Параметры:**
-- `name` (обязательный) — имя процедуры/функции
-- `module` (опциональный) — модуль-владелец
-- `depth` (опциональный, 1–10, по умолчанию 5) — максимальная глубина рекурсии
-
-**Возвращает:** список всех затронутых процедур с количеством.
-
-**Пример:**
-```
-get_impact("ОбщаяФункция", "ОбщийМодульБСП", depth=3)
-→ Impact radius for "ОбщаяФункция" (depth=3, 47 callers):
-  ПродажаТоваров.ПровестиДокумент
-  ПоступлениеТоваров.ПровестиДокумент
-  ... (ещё 45 процедур)
-```
-
----
-
-### `reindex`
-Пересканировать и переиндексировать все BSL-файлы из корневой папки.
-
-Вызывать после изменений в коде (выгрузка новой конфигурации).
-
-**Параметры:** нет.
-
----
-
-### `stats`
-Показать статистику текущего индекса.
-
-**Параметры:** нет.
-
-**Пример ответа:**
-```
-Root: C:\Users\shum\Documents\BSL
-Files: 10924
-Procedures/Functions: 123688
-Call sites: 1037016
-Indexed at: 2026-05-22T19:15:50.581Z
-```
-
----
-
-## Требования
-
-- **Node.js** 18 или новее
-- **npm** (входит в Node.js)
-- Выгруженная конфигурация 1С в XML-исходниках (BSL-файлы)
-
----
-
-## Установка
-
-### 1. Установить зависимости
-
-```bash
-cd <папка с проектом>
-npm install
-```
-
-### 2. Проверить работу (опционально)
-
-```bash
+```console
+git clone https://github.com/ShustovM/bsl-callgraph.git
+cd bsl-callgraph
+npm ci
 npm test
 ```
 
-Ожидаемый вывод:
-```
-=== PARSER TEST ===
-Module name extracted: "ТестовыйМодуль"
-Procedures found (4): ...
-Call sites found (7): ...
-=== STORE TEST ===
-Stats: 1 files, 4 procedures, 7 calls
-✓ All tests passed
+Start the stdio server with the BSL root as its only positional argument:
+
+```console
+npm start -- /absolute/path/to/bsl-export
 ```
 
-### 3. Подключить к Claude Code (VS Code расширение)
+When the package is installed as a command-line package, the equivalent command
+is:
 
-Открыть файл `.mcp.json` в **корне рабочей папки** (обычно `C:\Users\<имя>\.mcp.json`) и добавить запись:
+```console
+bsl-callgraph /absolute/path/to/bsl-export
+```
+
+The server writes protocol messages to standard input/output and diagnostic
+progress to standard error. It is normally launched by an MCP client, not used
+as an interactive shell command.
+
+## MCP client configuration
+
+Every client must launch the server with exactly one fixed BSL root. The root
+is chosen in client configuration and cannot be replaced by a tool call.
+
+### Codex CLI
+
+After installing or linking the command, register the local stdio server:
+
+```console
+codex mcp add bsl-callgraph -- bsl-callgraph /work/bsl-export
+codex mcp get bsl-callgraph
+```
+
+Use absolute paths on Windows. `codex mcp remove bsl-callgraph` removes the
+registration.
+
+### Claude Code
+
+Claude Code uses the same stdio command form:
+
+```console
+claude mcp add bsl-callgraph -- bsl-callgraph /work/bsl-export
+claude mcp get bsl-callgraph
+```
+
+Add `--scope project` before `--` only when the repository should intentionally
+share this local server configuration.
+
+### Generic stdio MCP client
+
+Point the client at Node.js, this repository's server entry point, and the BSL
+root. For example on a POSIX system:
 
 ```json
 {
   "mcpServers": {
     "bsl-callgraph": {
-      "command": "C:\\путь\\к\\node.exe",
+      "command": "node",
       "args": [
-        "C:\\путь\\к\\MCP_Bsl-callgraph\\src\\mcp-server.js",
-        "C:\\путь\\к\\BSL-исходникам"
+        "/opt/bsl-callgraph/src/mcp-server.js",
+        "/work/bsl-export"
       ]
     }
   }
 }
 ```
 
-**Где взять путь к `node.exe`:**
-```powershell
-(Get-Command node).Source
-```
-
-**Пример готовой записи:**
-```json
-"bsl-callgraph": {
-  "command": "C:\\Users\\shum\\nodejs\\node.exe",
-  "args": [
-    "C:\\Users\\shum\\Desktop\\Новенькое\\MCP_Bsl-callgraph\\src\\mcp-server.js",
-    "C:\\Users\\shum\\Documents\\BSL"
-  ]
-}
-```
-
-> **Важно:** редактировать нужно именно `.mcp.json` в корне рабочей папки (не `~/.claude/.mcp.json`), иначе VS Code расширение не подхватит сервер.
-
-### 4. Перезагрузить VS Code
-
-`Ctrl+Shift+P` → **Developer: Reload Window**
-
-После перезагрузки инструменты `bsl-callgraph__*` появятся в Claude Code автоматически. Индексация 10 000+ файлов занимает ~15 секунд в фоне — в это время инструменты отвечают "Index is being built, please wait...".
-
----
-
-## Подключение к Claude Code CLI (без VS Code)
-
-Добавить в `~/.claude/.mcp.json`:
+On Windows, use absolute paths and escape backslashes in JSON:
 
 ```json
 {
   "mcpServers": {
     "bsl-callgraph": {
-      "command": "/путь/к/node",
+      "command": "C:\\Program Files\\nodejs\\node.exe",
       "args": [
-        "/путь/к/src/mcp-server.js",
-        "/путь/к/BSL-исходникам"
+        "C:\\Tools\\bsl-callgraph\\src\\mcp-server.js",
+        "D:\\Work\\bsl-export"
       ]
     }
   }
 }
 ```
 
----
+The exact configuration-file location and reload procedure depend on the MCP
+client. Consult that client's current documentation. The Codex command shape
+above was verified against the installed CLI; the Claude Code form follows its
+official MCP documentation.
 
-## Структура проекта
+## Tools
 
+### `find_symbol`
+
+Find procedure or function definitions by exact, case-insensitive name.
+
+- `name` — required procedure/function name.
+- `module` — optional display alias or canonical module ID.
+- `limit` — optional result limit from 1 to 200; default is 50.
+- `cursor` — optional opaque cursor from the preceding page.
+
+### `search_symbols`
+
+Search definitions by a case-insensitive name substring.
+
+- `query` — required substring.
+- `module` — optional display alias or canonical module ID.
+- `limit` — optional result limit from 1 to 200; default is 50.
+- `cursor` — optional opaque cursor from the preceding page.
+
+### `get_callers`
+
+Find procedures/functions that contain a call to a named symbol.
+
+- `name` — required callee name.
+- `module` — optional target-module filter.
+- `mode` — `exact` by default, or `exploratory`.
+- `limit` — optional result limit from 1 to 200; default is 50.
+- `cursor` — optional opaque cursor from the preceding page.
+
+### `get_callees`
+
+Find call candidates inside a named procedure/function.
+
+- `name` — required caller name.
+- `module` — optional caller-module filter.
+- `mode` — `exact` by default, or `exploratory`.
+- `limit` — optional result limit from 1 to 200; default is 50.
+- `cursor` — optional opaque cursor from the preceding page.
+
+### `get_impact`
+
+Walk callers transitively to estimate the impact radius of a change.
+
+- `name` — required starting symbol name.
+- `module` — optional starting-module filter.
+- `depth` — optional traversal depth from 1 to 10; default is 5.
+- `mode` — `exact` by default, or `exploratory`.
+- `limit` — optional result limit from 1 to 200; default is 50.
+- `cursor` — optional opaque cursor from the preceding page.
+
+### `reindex`
+
+Re-scan the configured root after its BSL files change. The call waits for the
+new generation to be built and atomically published. Concurrent calls join the
+same build. A failed rebuild leaves the preceding good generation available.
+The tool does not accept a new filesystem root.
+
+### `stats`
+
+Return `building`, `ready`, or `failed` state, generation, timestamp, bounded
+diagnostics, resolution counts, and index counts. The configured absolute root
+is deliberately omitted from tool results.
+
+### `server_info`
+
+Return the server version and machine-readable capabilities, including page and
+impact limits, graph modes, link policy, structured output, and immutable-root
+behavior.
+
+Every tool returns concise text plus `structuredContent`. List tools use opaque
+cursors: do not inspect or modify a cursor, and do not reuse it with different
+arguments or after a new index generation.
+
+## Exact and exploratory graphs
+
+The resolver classifies each call candidate as:
+
+- `resolved` — one target is known, with its canonical module and provenance;
+- `ambiguous` — several valid targets remain;
+- `dynamic` — a variable/object receiver or unknown target needs runtime type
+  information.
+
+`exact` callers, callees, and impact include only resolved edges. Use
+`mode: "exploratory"` when possible ambiguous or dynamic candidates are useful.
+Exploratory results include their resolution reason, confidence, candidate
+targets, and source location; they are not silently treated as proven impact.
+
+## Accuracy and performance boundaries
+
+BSL CallGraph recognizes Russian and English `Procedure`/`Function` declarations
+and `Export`, including multiline signatures. Its stateful lexer carries BSL
+string and `//` comment state across lines and handles doubled quotes, so query
+text does not become graph edges. Calls are collected as candidates and resolved
+only after every module is known. Static analysis still has important limits:
+
+- dynamic dispatch and values stored in variables may not resolve to one target;
+- duplicate symbol or module display names can be ambiguous;
+- preprocessor behavior, type inference, and runtime metadata are not evaluated;
+- malformed source can reduce the completeness of one file's results;
+- measured indexing time depends on filesystem, hardware, Node.js version,
+  source layout, and background load.
+
+Do not interpret the output as compiler-exact proof that a call is present or
+absent. After indexing, many lookups use in-memory maps and are typically fast,
+but the project does not promise a fixed latency or token-saving ratio.
+
+The checked-in [baseline](docs/baseline.md) records a reproducible synthetic
+fixture and an anonymized one-off observation from a larger repository. Use
+`npm run baseline` to measure the public fixture on your machine. The generated
+[performance benchmark](docs/performance.md) measures indexing, store loading,
+queries, and sampled peak RSS without committing a source corpus or its path.
+
+## Privacy and security
+
+Parsing and indexing happen in the local Node.js process. The server is designed
+to read BSL source under the root supplied at startup; it does not execute BSL
+or require network access.
+
+MCP responses can contain symbol and module names, canonical module IDs,
+relative file paths, and line locations. Those results are visible to the
+connected MCP client and may be handled by a remote agent or service according
+to that client's policy. The absolute configured root is used locally but not
+returned by tools; the client configuration itself necessarily contains the
+launch argument. Review the client configuration before indexing confidential
+source.
+
+Report security issues privately as described in [SECURITY.md](SECURITY.md).
+
+## Development
+
+```console
+npm ci
+npm test
+npm run baseline
+npm run benchmark
+npm audit --omit=dev --audit-level=high
+npm pack --dry-run
 ```
-src/
-  parser.js      — BSL-парсер на чистом JS (regex), извлекает процедуры и вызовы
-  indexer.js     — рекурсивный обход BSL-файлов, async-индексация без блокировки
-  store.js       — in-memory индекс с Map-lookup O(1)
-  mcp-server.js  — MCP-сервер (McpServer + StdioServerTransport)
-test/
-  test-parser.js — базовые тесты парсера и хранилища
-  fixtures/      — тестовый BSL-модуль
-package.json
+
+Tests and committed fixtures must be synthetic and free of private paths or
+customer data. See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution and
+verification checklist.
+
+## Project layout
+
+```text
+bin/                 executable package entry point
+docs/                maintained project notes and baselines
+scripts/             repository maintenance scripts
+src/parser.js        BSL parsing and call-candidate extraction
+src/lexer.js         stateful BSL tokenization and source locations
+src/resolver.js      second-pass call-edge classification
+src/indexer.js       recursive source discovery and indexing
+src/index-manager.js atomic indexing generations and lifecycle
+src/store.js         in-memory call-graph indexes and queries
+src/mcp-server.js    stdio MCP server and tool definitions
+test/                node:test suites and synthetic fixtures
 ```
 
----
+## Troubleshooting and uninstall
 
-## Как работает парсер
+- `Index is being built` is expected immediately after startup; poll `stats` or
+  retry after it reports `ready`.
+- A `failed` state includes a bounded error. Fix root permissions or malformed
+  configuration and call `reindex`; an earlier good generation remains usable.
+- An invalid cursor usually means the query arguments or generation changed;
+  restart pagination without a cursor.
+- If the process exits at startup, verify Node.js 22/24 and that the one root
+  argument names a readable directory.
 
-- Читает BSL построчно, распознаёт `Процедура`/`Функция`/`Procedure`/`Function`
-- Извлекает вызовы вида `Метод()` и `Модуль.Метод()`
-- Корректно пропускает комментарии (`//`) и строковые литералы (`"..."`)
-- Определяет имя модуля из пути файла по соглашению 1С:
-  - `CommonModules\МодульБСП\Ext\Module.bsl` → `МодульБСП`
-  - `Documents\ПродажаТоваров\Ext\ObjectModule.bsl` → `ПродажаТоваров`
+To uninstall, remove the MCP registration from the client, stop any running
+server process, and remove the package (`npm uninstall -g bsl-callgraph`) or the
+source checkout. The server creates no database or cache to clean up.
 
----
+## License
 
-## Лицензия
-
-MIT
+[MIT](LICENSE)
