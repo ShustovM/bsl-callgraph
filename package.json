@@ -1,13 +1,51 @@
 {
   "name": "bsl-callgraph",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "BSL (1C:Enterprise) call-graph MCP server for AI agents",
+  "author": "ShustovMY",
   "main": "src/mcp-server.js",
-  "scripts": {
-    "start": "node src/mcp-server.js",
-    "test": "node test/test-parser.js"
+  "type": "commonjs",
+  "bin": {
+    "bsl-callgraph": "bin/bsl-callgraph.js"
   },
-  "keywords": ["1c", "bsl", "callgraph", "mcp"],
+  "files": [
+    "baseline/",
+    "bin/",
+    "src/",
+    "scripts/baseline.js",
+    "scripts/benchmark.js",
+    "docs/baseline.md",
+    "docs/performance.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "start": "node ./src/mcp-server.js",
+    "test": "node --test",
+    "baseline": "node ./scripts/baseline.js",
+    "benchmark": "node ./scripts/benchmark.js"
+  },
+  "engines": {
+    "node": "^22.0.0 || ^24.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ShustovM/bsl-callgraph.git"
+  },
+  "homepage": "https://github.com/ShustovM/bsl-callgraph#readme",
+  "bugs": {
+    "url": "https://github.com/ShustovM/bsl-callgraph/issues"
+  },
+  "keywords": [
+    "1c",
+    "bsl",
+    "call-graph",
+    "mcp",
+    "model-context-protocol"
+  ],
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
