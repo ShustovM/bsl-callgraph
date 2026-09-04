@@ -20,20 +20,23 @@ function parseArguments(args) {
   let runs = 20;
 
   for (let index = 0; index < args.length; index++) {
-    const argument = args[index];
+    const separator = args[index].indexOf('=');
+    const argument = separator >= 0 ? args[index].slice(0, separator) : args[index];
+    const inlineValue = separator >= 0 ? args[index].slice(separator + 1) : undefined;
+    const readValue = () => inlineValue ?? args[++index];
 
     if (argument === '--root') {
-      root = args[++index];
+      root = readValue();
       label = 'external corpus';
     } else if (argument === '--label') {
-      label = args[++index];
+      label = readValue();
     } else if (argument === '--runs') {
-      runs = parsePositiveInteger(args[++index], '--runs');
+      runs = parsePositiveInteger(readValue(), '--runs');
     } else {
       throw new Error(`Unknown option: ${argument}`);
     }
 
-    if (args[index] === undefined) {
+    if ((argument === '--root' && !root) || (argument === '--label' && !label)) {
       throw new Error(`${argument} requires a value.`);
     }
   }

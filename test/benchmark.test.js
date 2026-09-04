@@ -10,6 +10,11 @@ test('generated benchmark is bounded, path-neutral, and reproducible in a small 
     methods: 4,
     queries: 5,
   });
+  assert.deepEqual(parseArguments(['--modules=3', '--methods=4', '--queries=5']), {
+    modules: 3,
+    methods: 4,
+    queries: 5,
+  });
   assert.throws(() => parseArguments(['--modules', '0']), /from 1/iu);
 
   const report = await runBenchmark({ modules: 3, methods: 4, queries: 5 });

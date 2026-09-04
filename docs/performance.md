@@ -13,7 +13,7 @@ npm run benchmark
 Smaller or larger reproducible profiles can be selected explicitly:
 
 ```console
-npm run benchmark -- --modules 1000 --methods 25 --queries 5000
+node scripts/benchmark.js --modules=1000 --methods=25 --queries=5000
 ```
 
 The report includes corpus counts, generation/index/store-load durations, mean

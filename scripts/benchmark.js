@@ -24,11 +24,15 @@ function parseArguments(args) {
     ['--queries', ['queries', 100000]],
   ]);
 
-  for (let index = 0; index < args.length; index += 2) {
-    const [property, maximum] = options.get(args[index]) || [];
-    if (!property) throw new Error(`Unknown option: ${args[index]}`);
-    if (args[index + 1] === undefined) throw new Error(`${args[index]} requires a value.`);
-    result[property] = positiveInteger(args[index + 1], args[index], maximum);
+  for (let index = 0; index < args.length; index++) {
+    const separator = args[index].indexOf('=');
+    const option = separator >= 0 ? args[index].slice(0, separator) : args[index];
+    const inlineValue = separator >= 0 ? args[index].slice(separator + 1) : undefined;
+    const [property, maximum] = options.get(option) || [];
+    if (!property) throw new Error(`Unknown option: ${option}`);
+    const value = inlineValue ?? args[++index];
+    if (value === undefined || value === '') throw new Error(`${option} requires a value.`);
+    result[property] = positiveInteger(value, option, maximum);
   }
   return result;
 }

@@ -32,7 +32,7 @@ The script prints JSON, deliberately labels the corpus instead of printing its
 root path, and can measure another readable tree without exposing the path:
 
 ```console
-node scripts/baseline.js --root <bsl-root> --label external-corpus --runs 1
+node scripts/baseline.js --root=<bsl-root> --label=external-corpus --runs=1
 ```
 
 Do not commit output derived from non-public source trees unless it has been
