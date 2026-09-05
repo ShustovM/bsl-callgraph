@@ -155,6 +155,20 @@ describe('store baseline contract', () => {
 });
 
 describe('store hardening contract', () => {
+  test('paginates a high-fan-in graph without exceeding the argument stack', () => {
+    const caller = procedure('common/a', 'A', 'A', 'CommonModules/A/Ext/Module.bsl');
+    const target = procedure('common/b', 'B', 'B', 'CommonModules/B/Ext/Module.bsl');
+    const edges = Array.from({ length: 130000 }, (_, line) =>
+      call({ caller, callee: target, line: line + 1 })
+    );
+    const store = loadStore([caller, target], edges);
+    const page = store.getCallers('B', undefined, { limit: 1 });
+    assert.equal(page.items.length, 1);
+    assert.equal(page.total, edges.length);
+    assert.ok(page.nextCursor);
+    assert.equal(store.getImpact('B', undefined, 1, { limit: 1 }).items.length, 1);
+  });
+
   test('keeps form, object, and manager modules with duplicate display names distinct', () => {
     const formModule = {
       ...procedure(

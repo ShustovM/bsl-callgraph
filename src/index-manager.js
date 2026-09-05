@@ -72,7 +72,11 @@ class IndexManager {
         const result = await this._build(this.rootPath);
         const nextStore = this._storeFactory();
         const stats = { ...result.stats, generation: nextGeneration };
-        nextStore.load({ ...result, stats });
+        if (typeof nextStore.loadAsync === 'function') {
+          await nextStore.loadAsync({ ...result, stats });
+        } else {
+          nextStore.load({ ...result, stats });
+        }
         nextStore.diagnostics = Object.freeze([...(result.diagnostics || [])]);
 
         // Publish only after the complete generation has been built and loaded.
@@ -85,10 +89,10 @@ class IndexManager {
         this.state = 'failed';
         this.lastError = boundedMessage(error, this.rootPath);
         throw error;
-      } finally {
-        this._activeBuild = null;
       }
-    })();
+    })().finally(() => {
+      this._activeBuild = null;
+    });
     return this._activeBuild;
   }
 }

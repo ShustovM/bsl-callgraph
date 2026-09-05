@@ -354,8 +354,8 @@ async function main(args = process.argv.slice(2), options = {}) {
   manager.start().then(snapshot => {
     const stats = snapshot.stats;
     logger(`[${SERVER_NAME}] Generation ${snapshot.generation} ready: ${stats.files} files, ${stats.procedures} symbols, ${stats.calls} calls.`);
-  }).catch(error => {
-    logger(`[${SERVER_NAME}] Initial index failed: ${error.message}`);
+  }).catch(() => {
+    logger(`[${SERVER_NAME}] Initial index failed: ${manager.lastError}`);
   });
 
   return { manager, server, transport };

@@ -1,13 +1,14 @@
 'use strict';
 
 const { createHash } = require('node:crypto');
+const { runSync, runAsync, sortSteps } = require('./cooperative');
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
 const CURSOR_VERSION = 1;
 
 function normalizeKey(value) {
-  return String(value ?? '').normalize('NFC').toLocaleLowerCase('ru');
+  return String(value ?? '').normalize('NFC').toLowerCase();
 }
 
 function compareText(left, right) {
@@ -129,8 +130,12 @@ function addToIndex(index, key, value) {
   index.get(key).push(value);
 }
 
-function sortIndex(index, comparator) {
-  for (const values of index.values()) values.sort(comparator);
+function* sortIndexSteps(index, comparator) {
+  let count = 0;
+  for (const values of index.values()) {
+    if (count++ % 128 === 0) yield;
+    yield* sortSteps(values, comparator);
+  }
 }
 
 // In-memory call-graph index with canonical identities and bounded result pages.
@@ -163,27 +168,43 @@ class CallGraphStore {
 
   // Load an index generation. Extra procedure/edge fields are deliberately
   // retained, including resolver confidence, reasons, and target provenance.
-  load({ procedures = [], calls = [], stats = null } = {}) {
+  load(index = {}) {
+    return runSync(this._loadSteps(index));
+  }
+
+  loadAsync(index = {}, options = {}) {
+    return runAsync(this._loadSteps(index), options);
+  }
+
+  *_loadSteps({ procedures = [], calls = [], stats = null } = {}) {
+    yield;
     this._reset();
     this._generation = Number.isSafeInteger(stats?.generation)
       ? stats.generation
       : this._generation + 1;
     this.stats = stats;
 
-    const normalizedProcedures = procedures.map(procedure => {
+    const normalizedProcedures = [];
+    for (let index = 0; index < procedures.length; index++) {
+      if (index % 256 === 0) yield;
+      const procedure = procedures[index];
       const moduleId = derivedModuleId(procedure);
       const canonicalId = procedure.id
         ? String(procedure.id)
         : `${moduleId}::${normalizeKey(procedure.normalizedName || procedure.name)}`;
 
       if (procedure.id === canonicalId && procedure.moduleId === moduleId) {
-        return procedure;
+        normalizedProcedures.push(procedure);
+      } else {
+        normalizedProcedures.push({ ...procedure, id: canonicalId, moduleId });
       }
-      return { ...procedure, id: canonicalId, moduleId };
-    }).sort(compareProcedures);
+    }
+    yield* sortSteps(normalizedProcedures, compareProcedures);
 
     const seenProcedureIds = new Set();
-    for (const procedure of normalizedProcedures) {
+    for (let index = 0; index < normalizedProcedures.length; index++) {
+      if (index % 256 === 0) yield;
+      const procedure = normalizedProcedures[index];
       const idKey = normalizeKey(procedure.id);
       if (seenProcedureIds.has(idKey)) continue;
       seenProcedureIds.add(idKey);
@@ -196,15 +217,16 @@ class CallGraphStore {
       }
     }
 
-    sortIndex(this._byName, compareProcedures);
-    sortIndex(this._byModule, compareProcedures);
+    yield* sortIndexSteps(this._byName, compareProcedures);
+    yield* sortIndexSteps(this._byModule, compareProcedures);
 
     const callsAreCanonical = calls.canonicalSorted === true;
     // Resolver output is already canonical. Query indexes are sorted for
     // manual/legacy input only, avoiding duplicate work for large generations.
-    const normalizedCalls = calls.map(call => this._normalizeEdge(call));
     const seenEdges = new Set();
-    for (const edge of normalizedCalls) {
+    for (let index = 0; index < calls.length; index++) {
+      if (index % 256 === 0) yield;
+      const edge = this._normalizeEdge(calls[index]);
       const identity = edge.id ? normalizeKey(edge.id) : edgeIdentity(edge);
       if (seenEdges.has(identity)) continue;
       seenEdges.add(identity);
@@ -233,11 +255,11 @@ class CallGraphStore {
     }
 
     if (!callsAreCanonical) {
-      sortIndex(this._callsByCallerId, compareEdges);
-      sortIndex(this._callsByCalleeId, compareEdges);
-      sortIndex(this._candidateCallsByCalleeId, compareEdges);
-      sortIndex(this._fallbackCallsByCallerName, compareEdges);
-      sortIndex(this._fallbackCallsByCalleeName, compareEdges);
+      yield* sortIndexSteps(this._callsByCallerId, compareEdges);
+      yield* sortIndexSteps(this._callsByCalleeId, compareEdges);
+      yield* sortIndexSteps(this._candidateCallsByCalleeId, compareEdges);
+      yield* sortIndexSteps(this._fallbackCallsByCallerName, compareEdges);
+      yield* sortIndexSteps(this._fallbackCallsByCalleeName, compareEdges);
     }
   }
 
@@ -459,9 +481,9 @@ class CallGraphStore {
     const results = [];
 
     for (const targetId of targetIds) {
-      results.push(...(this._callsByCalleeId.get(targetId) || []));
+      for (const edge of this._callsByCalleeId.get(targetId) || []) results.push(edge);
       if (options.includeAmbiguous) {
-        results.push(...(this._candidateCallsByCalleeId.get(targetId) || []));
+        for (const edge of this._candidateCallsByCalleeId.get(targetId) || []) results.push(edge);
       }
     }
 
@@ -591,7 +613,7 @@ class CallGraphStore {
     const idKey = normalizeKey(id);
     const results = [...(this._callsByCalleeId.get(idKey) || [])];
     if (options.includeAmbiguous) {
-      results.push(...(this._candidateCallsByCalleeId.get(idKey) || []));
+      for (const edge of this._candidateCallsByCalleeId.get(idKey) || []) results.push(edge);
     }
 
     const target = this._procedureById(id);

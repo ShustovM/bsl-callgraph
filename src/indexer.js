@@ -3,7 +3,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { parseFile } = require('./parser');
-const { resolveCalls } = require('./resolver');
+const { resolveCalls, resolveCallsAsync } = require('./resolver');
+const { runSync, runAsync, sortSteps } = require('./cooperative');
 
 const DEFAULT_IGNORED_DIRECTORIES = new Set([
   '.git',
@@ -12,10 +13,6 @@ const DEFAULT_IGNORED_DIRECTORIES = new Set([
   'node_modules',
 ]);
 const DEFAULT_DIAGNOSTIC_LIMIT = 100;
-
-function diagnostic(code, message, extra = {}) {
-  return { code, severity: 'warning', message, ...extra };
-}
 
 function validateRoot(rootPath) {
   if (typeof rootPath !== 'string' || rootPath.trim() === '') {
@@ -39,7 +36,8 @@ function validateRoot(rootPath) {
   return canonicalPath;
 }
 
-function scanBslFiles(rootPath, options = {}) {
+function* scanBslFilesSteps(rootPath, options = {}) {
+  yield;
   const canonicalRoot = options.validated ? rootPath : validateRoot(rootPath);
   const ignored = new Set([
     ...DEFAULT_IGNORED_DIRECTORIES,
@@ -47,6 +45,7 @@ function scanBslFiles(rootPath, options = {}) {
   ].map(value => String(value).toLowerCase()));
   const diagnostics = [];
   const files = [];
+  const relativePaths = new Map();
   const stack = [canonicalRoot];
 
   while (stack.length > 0) {
@@ -55,16 +54,13 @@ function scanBslFiles(rootPath, options = {}) {
     try {
       entries = fs.readdirSync(directory, { withFileTypes: true });
     } catch (error) {
-      diagnostics.push(diagnostic(
-        'unreadable-directory',
-        `Directory could not be read: ${error.message}`,
-        { file: path.relative(canonicalRoot, directory).replace(/\\/gu, '/') || '.' }
-      ));
-      continue;
+      throw new Error(`Directory could not be read: ${error.message}`, { cause: error });
     }
 
-    entries.sort((left, right) => left.name.localeCompare(right.name, 'en'));
+    yield;
+    yield* sortSteps(entries, (left, right) => left.name.localeCompare(right.name, 'en'));
     for (let index = entries.length - 1; index >= 0; index--) {
+      if (index % 128 === 0) yield;
       const entry = entries[index];
       const fullPath = path.join(directory, entry.name);
 
@@ -77,16 +73,22 @@ function scanBslFiles(rootPath, options = {}) {
       }
       if (entry.isFile() && entry.name.toLowerCase().endsWith('.bsl')) {
         files.push(fullPath);
+        relativePaths.set(fullPath, path.relative(canonicalRoot, fullPath).replace(/\\/gu, '/'));
       }
     }
   }
 
-  files.sort((left, right) => {
-    const leftRelative = path.relative(canonicalRoot, left).replace(/\\/gu, '/');
-    const rightRelative = path.relative(canonicalRoot, right).replace(/\\/gu, '/');
-    return leftRelative.localeCompare(rightRelative, 'en');
-  });
+  yield* sortSteps(files, (left, right) =>
+    relativePaths.get(left).localeCompare(relativePaths.get(right), 'en'));
   return { rootPath: canonicalRoot, files, diagnostics };
+}
+
+function scanBslFiles(rootPath, options = {}) {
+  return runSync(scanBslFilesSteps(rootPath, options));
+}
+
+function scanBslFilesAsync(rootPath, options = {}) {
+  return runAsync(scanBslFilesSteps(rootPath, options), options);
 }
 
 function findBslFiles(rootPath, options) {
@@ -115,26 +117,24 @@ function addDiagnostics(accumulator, diagnostics, file) {
 
 function parseInto(accumulator, filePath) {
   const relativePath = path.relative(accumulator.rootPath, filePath).replace(/\\/gu, '/');
+  let content;
   try {
-    const content = fs.readFileSync(filePath, 'utf8');
-    const parsed = parseFile(content, relativePath);
-    accumulator.procedures.push(...parsed.procedures);
-    accumulator.candidates.push(...parsed.calls);
-    addDiagnostics(accumulator, parsed.diagnostics || [], relativePath);
+    content = fs.readFileSync(filePath, 'utf8');
   } catch (error) {
-    accumulator.readErrors++;
-    addDiagnostics(accumulator, [diagnostic(
-      'unreadable-file',
-      `File could not be indexed: ${error.message}`,
-      { file: relativePath }
-    )], relativePath);
+    throw new Error(`File could not be indexed: ${error.message}`, { cause: error });
   }
+  const parsed = parseFile(content, relativePath);
+  for (const procedure of parsed.procedures) accumulator.procedures.push(procedure);
+  for (const candidate of parsed.calls) accumulator.candidates.push(candidate);
+  addDiagnostics(accumulator, parsed.diagnostics || [], relativePath);
 }
 
-function finishIndex(accumulator, fileCount) {
-  const calls = resolveCalls(accumulator.procedures, accumulator.candidates);
+function* finishIndexSteps(accumulator, fileCount, calls) {
+  yield;
   const resolution = { resolved: 0, ambiguous: 0, dynamic: 0 };
-  for (const edge of calls) {
+  for (let index = 0; index < calls.length; index++) {
+    if (index % 512 === 0) yield;
+    const edge = calls[index];
     if (Object.hasOwn(resolution, edge.resolution)) resolution[edge.resolution]++;
   }
 
@@ -157,6 +157,19 @@ function finishIndex(accumulator, fileCount) {
   };
 }
 
+function finishIndex(accumulator, fileCount) {
+  const calls = resolveCalls(accumulator.procedures, accumulator.candidates);
+  return runSync(finishIndexSteps(accumulator, fileCount, calls));
+}
+
+function* parseFilesSteps(accumulator, files) {
+  yield;
+  for (const filePath of files) {
+    parseInto(accumulator, filePath);
+    yield;
+  }
+}
+
 function buildIndex(rootPath, options = {}) {
   const scan = scanBslFiles(rootPath, options);
   const accumulator = createAccumulator(
@@ -169,21 +182,16 @@ function buildIndex(rootPath, options = {}) {
 }
 
 async function buildIndexAsync(rootPath, options = {}) {
-  const scan = scanBslFiles(rootPath, options);
+  const scan = await scanBslFilesAsync(rootPath, options);
   const accumulator = createAccumulator(
     scan.rootPath,
     options.diagnosticLimit ?? DEFAULT_DIAGNOSTIC_LIMIT
   );
   addDiagnostics(accumulator, scan.diagnostics, '.');
-  const yieldEvery = options.yieldEvery ?? 200;
-
-  for (let index = 0; index < scan.files.length; index++) {
-    parseInto(accumulator, scan.files[index]);
-    if (yieldEvery > 0 && index % yieldEvery === 0) {
-      await new Promise(resolve => setImmediate(resolve));
-    }
-  }
-  return finishIndex(accumulator, scan.files.length);
+  // Check the time budget after every file, regardless of legacy yieldEvery.
+  await runAsync(parseFilesSteps(accumulator, scan.files), options);
+  const calls = await resolveCallsAsync(accumulator.procedures, accumulator.candidates, options);
+  return runAsync(finishIndexSteps(accumulator, scan.files.length, calls), options);
 }
 
 module.exports = {
@@ -193,5 +201,6 @@ module.exports = {
   buildIndexAsync,
   findBslFiles,
   scanBslFiles,
+  scanBslFilesAsync,
   validateRoot,
 };

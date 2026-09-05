@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-09-04
+## [1.1.0] - 2026-09-05
 
 ### Added
 
@@ -33,6 +33,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer produce query-language calls.
 - `Procedure`/`Function` property names no longer disrupt declaration parsing;
   Russian and English async declarations are recognized explicitly.
+- Calls through indexed values, call results, and property chains remain
+  dynamic instead of being resolved as unrelated local or module methods.
+- File/directory read failures retain the last complete index generation.
+- Large index builds yield to MCP requests throughout scanning, resolution,
+  sorting, and store loading; high-fan-in requests no longer exhaust the
+  JavaScript argument stack.
 
 ## [1.0.0] - 2026-05-23
 

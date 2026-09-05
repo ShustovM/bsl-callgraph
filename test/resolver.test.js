@@ -155,6 +155,45 @@ EndProcedure
     assert.equal(edge.reason, 'unknown-unqualified-symbol');
   });
 
+  test('keeps expression receivers dynamic without losing nested calls', () => {
+    const caller = parse(`
+Procedure Start()
+    GetObject().Target();
+    Items[GetIndex()].Target();
+    Object.Library.Remote();
+    GetObject().Library.Remote();
+    (Library).Remote();
+    Library.Remote();
+EndProcedure
+
+Function GetObject()
+EndFunction
+
+Function GetIndex()
+EndFunction
+
+Procedure Target()
+EndProcedure
+`, 'CommonModules/Caller/Ext/Module.bsl');
+    const library = parse('Procedure Remote() Export\nEndProcedure',
+      'CommonModules/Library/Ext/Module.bsl');
+
+    const edges = resolveCalls(combine(caller, library));
+    const expressionCalls = edges.filter(edge => edge.receiver === '<expression>');
+    assert.equal(expressionCalls.length, 5);
+    for (const edge of expressionCalls) {
+      assert.equal(edge.resolution, 'dynamic');
+      assert.equal(edge.reason, 'complex-receiver');
+      assert.equal(edge.calleeId, null);
+      assert.deepEqual(edge.candidates, []);
+    }
+    assert.equal(edges.filter(edge => edge.calleeName === 'GetObject').length, 2);
+    assert.equal(edgeByName(edges, 'GetIndex').reason, 'local-symbol');
+    assert.equal(edgeByName(edges, 'Remote', 'Library').reason, 'known-module');
+    assert.deepEqual(resolvedEdges(edges).map(edge => edge.calleeName),
+      ['GetObject', 'GetIndex', 'GetObject', 'Remote']);
+  });
+
   test('does not resolve a qualified call to a non-exported module method', () => {
     const caller = parseFile([
       'Procedure Run() Export',

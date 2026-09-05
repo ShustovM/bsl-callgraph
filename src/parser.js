@@ -22,7 +22,6 @@ const END_KEYWORDS = new Map([
 ]);
 
 const EXPORT_KEYWORDS = new Set(['экспорт', 'export']);
-const ASYNC_KEYWORDS = new Set(['асинх', 'async']);
 
 // Language statements and operators which can syntactically precede `(` but
 // never represent a procedure/function call.
@@ -58,24 +57,11 @@ function previousSignificant(tokens, startIndex) {
   return index;
 }
 
-function isFirstSignificantOnLine(tokens, index) {
-  const token = tokens[index];
-  const previous = tokens[previousSignificant(tokens, index - 1)];
-  return !previous || previous.line < token.line;
-}
-
-function isDeclarationStart(tokens, index) {
-  if (isFirstSignificantOnLine(tokens, index)) return true;
-
-  const token = tokens[index];
-  const previousIndex = previousSignificant(tokens, index - 1);
-  const previous = tokens[previousIndex];
-  if (previous?.line !== token.line
-      || previous.type !== 'identifier'
-      || !ASYNC_KEYWORDS.has(foldIdentifier(previous.value))) {
-    return false;
-  }
-  return isFirstSignificantOnLine(tokens, previousIndex);
+function isStructuralKeyword(tokens, index) {
+  // BSL statements need not occupy separate lines. These reserved words are
+  // structural everywhere except after a member-access dot, which may itself
+  // occur on the preceding line.
+  return tokens[previousSignificant(tokens, index - 1)]?.value !== '.';
 }
 
 function diagnostic(code, message, token, extra = {}) {
@@ -205,14 +191,23 @@ function callCandidate(tokens, index, currentProcedure, occurrence) {
 
   const dotIndex = previousSignificant(tokens, index - 1);
   let receiver = null;
+  let complexReceiver = false;
   if (tokens[dotIndex]?.value === '.') {
     const receiverIndex = previousSignificant(tokens, dotIndex - 1);
-    if (tokens[receiverIndex]?.type === 'identifier') {
+    const beforeReceiverIndex = previousSignificant(tokens, receiverIndex - 1);
+    if (tokens[receiverIndex]?.type === 'identifier'
+        && tokens[beforeReceiverIndex]?.value !== '.') {
       receiver = tokens[receiverIndex].value;
+    } else {
+      // A call result, indexed value, or property chain is an expression, not
+      // a bare module name. Do not turn it into an unqualified call or resolve
+      // it through just the final property name.
+      receiver = '<expression>';
+      complexReceiver = true;
     }
   }
 
-  return {
+  const candidate = {
     callerId: currentProcedure.id,
     calleeName: nameToken.value,
     calleeModule: null,
@@ -221,6 +216,8 @@ function callCandidate(tokens, index, currentProcedure, occurrence) {
     callColumn: nameToken.column,
     occurrence,
   };
+  if (complexReceiver) candidate.receiverKind = 'complex';
+  return candidate;
 }
 
 /**
@@ -246,7 +243,7 @@ function parseFile(content, filePath) {
     }
 
     const normalized = foldIdentifier(token.value);
-    if (DECLARATION_KEYWORDS.has(normalized) && isDeclarationStart(tokens, index)) {
+    if (DECLARATION_KEYWORDS.has(normalized) && isStructuralKeyword(tokens, index)) {
       if (currentProcedure) {
         diagnostics.push(diagnostic(
           'unclosed-procedure',
@@ -272,7 +269,7 @@ function parseFile(content, filePath) {
       continue;
     }
 
-    if (END_KEYWORDS.has(normalized) && isFirstSignificantOnLine(tokens, index)) {
+    if (END_KEYWORDS.has(normalized) && isStructuralKeyword(tokens, index)) {
       if (!currentProcedure) {
         diagnostics.push(diagnostic(
           'unmatched-procedure-end',

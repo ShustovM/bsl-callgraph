@@ -2,6 +2,8 @@
 
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs');
+const os = require('node:os');
 const { describe, test } = require('node:test');
 
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
@@ -9,14 +11,15 @@ const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio
 const { InMemoryTransport } = require('@modelcontextprotocol/sdk/inMemory.js');
 const { createMcpServer } = require('../src/mcp-server');
 const { IndexManager } = require('../src/index-manager');
+const { generateCorpus } = require('../scripts/benchmark');
 
 const repositoryRoot = path.join(__dirname, '..');
 const fixtureRoot = path.join(__dirname, 'fixtures');
 
-async function connectStdio(t) {
+async function connectStdio(t, root = fixtureRoot) {
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [path.join(repositoryRoot, 'bin', 'bsl-callgraph.js'), fixtureRoot],
+    args: [path.join(repositoryRoot, 'bin', 'bsl-callgraph.js'), root],
     cwd: repositoryRoot,
     stderr: 'pipe',
   });
@@ -33,6 +36,27 @@ async function call(client, name, args = {}) {
 }
 
 describe('MCP stdio integration', () => {
+  test('answers stats during an actual corpus rebuild and retains the prior generation', async t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bsl-callgraph-stdio-'));
+    generateCorpus(root, 100, 50);
+    const client = await connectStdio(t, root);
+    t.after(async () => {
+      await client.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+    await call(client, 'reindex');
+    const before = await call(client, 'stats');
+    const rebuilding = call(client, 'reindex');
+    const during = await call(client, 'stats');
+    assert.equal(during.structuredContent.index.state, 'building');
+    assert.equal(during.structuredContent.index.hasUsableIndex, true);
+    assert.equal(during.structuredContent.index.generation, before.structuredContent.index.generation);
+    assert.equal(during.structuredContent.data.procedures, 5000);
+    const completed = await rebuilding;
+    assert.equal(completed.isError, undefined);
+    assert.equal(completed.structuredContent.index.generation, before.structuredContent.index.generation + 1);
+  });
+
   test('initializes, publishes schemas, and serves every tool with structured content', async t => {
     const client = await connectStdio(t);
     const listing = await client.listTools();

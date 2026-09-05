@@ -1,6 +1,7 @@
 'use strict';
 
 const { foldIdentifier, procedureId } = require('./module-identity');
+const { runAsync, runSync, sortSteps } = require('./cooperative');
 
 function canonicalProcedure(procedure) {
   const moduleId = procedure.moduleId || `module:${foldIdentifier(procedure.module || '')}`;
@@ -60,8 +61,13 @@ function moduleAliases(procedure) {
   return aliases;
 }
 
-function buildSymbolTable(procedures) {
-  const normalizedProcedures = procedures.map(canonicalProcedure).sort(compareProcedures);
+function* buildSymbolTableSteps(procedures) {
+  const normalizedProcedures = [];
+  for (const procedure of procedures) {
+    normalizedProcedures.push(canonicalProcedure(procedure));
+    if (normalizedProcedures.length % 256 === 0) yield;
+  }
+  yield* sortSteps(normalizedProcedures, compareProcedures);
   const byModuleAndName = new Map();
   const exportedByName = new Map();
   const modulesByAlias = new Map();
@@ -70,6 +76,7 @@ function buildSymbolTable(procedures) {
   const provenanceById = new Map();
   const singletonCandidateIds = new Map();
 
+  let processed = 0;
   for (const procedure of normalizedProcedures) {
     byId.set(procedure.id, procedure);
     provenanceById.set(procedure.id, Object.freeze(targetProvenance(procedure)));
@@ -90,13 +97,10 @@ function buildSymbolTable(procedures) {
       moduleRecords.set(procedure.moduleId, module);
       for (const alias of module.aliases) addToMap(modulesByAlias, alias, module);
     }
+    if (++processed % 256 === 0) yield;
   }
 
-  for (const values of byModuleAndName.values()) values.sort(compareProcedures);
-  for (const values of exportedByName.values()) values.sort(compareProcedures);
-  for (const values of modulesByAlias.values()) {
-    values.sort((left, right) => compareText(left.id, right.id));
-  }
+  // All indexes inherit canonical order from the sorted procedure stream.
 
   return {
     procedures: normalizedProcedures,
@@ -106,8 +110,12 @@ function buildSymbolTable(procedures) {
     byModuleAndName,
     exportedByName,
     modulesByAlias,
-    modules: [...moduleRecords.values()].sort((left, right) => compareText(left.id, right.id)),
+    modules: [...moduleRecords.values()],
   };
+}
+
+function buildSymbolTable(procedures) {
+  return runSync(buildSymbolTableSteps(procedures));
 }
 
 function uniqueProcedures(procedures) {
@@ -117,6 +125,10 @@ function uniqueProcedures(procedures) {
 }
 
 function resolutionFor(candidate, symbolTable) {
+  if (candidate.receiverKind === 'complex') {
+    return { resolution: 'dynamic', reason: 'complex-receiver', confidence: 'low', targets: [] };
+  }
+
   const name = foldIdentifier(candidate.calleeName);
   const callerModuleId = candidate.callerModuleId
     || symbolTable.byId.get(candidate.callerId)?.moduleId
@@ -244,23 +256,35 @@ function makeEdge(candidate, result, ordinal, symbolTable) {
  * Resolve call candidates after every module has contributed its symbols.
  * Accepts either (procedures, calls) or ({ procedures, calls }).
  */
-function resolveCalls(proceduresOrIndex, callsArgument) {
+function* resolveCallSteps(proceduresOrIndex, callsArgument) {
   const procedures = Array.isArray(proceduresOrIndex)
     ? proceduresOrIndex
     : proceduresOrIndex?.procedures || [];
   const calls = Array.isArray(proceduresOrIndex)
     ? callsArgument || []
     : proceduresOrIndex?.calls || [];
-  const symbolTable = buildSymbolTable(procedures);
-  const orderedCandidates = [...calls].sort(compareCalls);
-  const edges = orderedCandidates.map((candidate, ordinal) =>
-    makeEdge(candidate, resolutionFor(candidate, symbolTable), ordinal, symbolTable)
-  );
+  const symbolTable = yield* buildSymbolTableSteps(procedures);
+  const orderedCandidates = [...calls];
+  yield* sortSteps(orderedCandidates, compareCalls);
+  const edges = [];
+  for (let ordinal = 0; ordinal < orderedCandidates.length; ordinal++) {
+    const candidate = orderedCandidates[ordinal];
+    edges.push(makeEdge(candidate, resolutionFor(candidate, symbolTable), ordinal, symbolTable));
+    if ((ordinal + 1) % 256 === 0) yield;
+  }
   Object.defineProperty(edges, 'canonicalSorted', {
     value: true,
     enumerable: false,
   });
   return edges;
+}
+
+function resolveCalls(proceduresOrIndex, callsArgument) {
+  return runSync(resolveCallSteps(proceduresOrIndex, callsArgument));
+}
+
+function resolveCallsAsync(proceduresOrIndex, callsArgument, options = {}) {
+  return runAsync(resolveCallSteps(proceduresOrIndex, callsArgument), options);
 }
 
 const resolveCallCandidates = resolveCalls;
@@ -281,6 +305,7 @@ module.exports = {
   exploratoryEdges,
   resolveCallCandidates,
   resolveCalls,
+  resolveCallsAsync,
   resolvedEdges,
   targetProvenance,
 };

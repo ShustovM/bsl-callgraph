@@ -71,26 +71,26 @@ function milliseconds(value) {
 
 async function runBenchmark(options) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bsl-callgraph-benchmark-'));
+  let sampler;
   try {
     const generationStarted = performance.now();
     generateCorpus(root, options.modules, options.methods);
     const generationMilliseconds = performance.now() - generationStarted;
 
     let peakRssBytes = process.memoryUsage().rss;
-    const sampler = setInterval(() => {
+    sampler = setInterval(() => {
       peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
     }, 5);
     sampler.unref();
     const rssBeforeBytes = process.memoryUsage().rss;
     const indexStarted = performance.now();
-    const index = await buildIndexAsync(root, { yieldEvery: 20 });
+    const index = await buildIndexAsync(root);
     const indexingMilliseconds = performance.now() - indexStarted;
-    clearInterval(sampler);
     peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
 
     const store = new CallGraphStore();
     const loadStarted = performance.now();
-    store.load(index);
+    await store.loadAsync(index);
     const storeLoadMilliseconds = performance.now() - loadStarted;
 
     const exactName = methodName(Math.floor(options.modules / 2), 0);
@@ -101,6 +101,7 @@ async function runBenchmark(options) {
       store.getCallers(exactName);
     }
     const queryMilliseconds = performance.now() - queryStarted;
+    peakRssBytes = Math.max(peakRssBytes, process.memoryUsage().rss);
 
     return {
       schemaVersion: 1,
@@ -133,6 +134,7 @@ async function runBenchmark(options) {
       },
     };
   } finally {
+    clearInterval(sampler);
     fs.rmSync(root, { recursive: true, force: true });
   }
 }

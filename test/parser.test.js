@@ -64,6 +64,37 @@ describe('parser baseline contract', () => {
 });
 
 describe('parser hardening contract', () => {
+  test('respects procedure boundaries without requiring line breaks between statements', () => {
+    const parsed = parseFile([
+      'Procedure First() FirstCall(); EndProcedure',
+      'Function Second() Return SecondCall(); EndFunction',
+      'Процедура Третья() ТретийВызов(); КонецПроцедуры',
+      'Procedure Fourth() EndProcedure Procedure Fifth() EndProcedure',
+      'ModuleInitialization();',
+    ].join('\n'), 'CommonModules/Compact/Ext/Module.bsl');
+
+    assert.deepEqual(parsed.procedures.map(procedure => procedure.name),
+      ['First', 'Second', 'Третья', 'Fourth', 'Fifth']);
+    assert.deepEqual(callNames(parsed), ['FirstCall', 'SecondCall', 'ТретийВызов']);
+    assert.deepEqual(parsed.diagnostics, []);
+  });
+
+  test('does not treat multiline member access as procedure boundaries', () => {
+    const parsed = parseFile([
+      'Procedure Configure()',
+      '    Settings.',
+      '    Procedure = "Handler";',
+      '    Settings.',
+      '    EndProcedure = "End";',
+      '    RealCall();',
+      'EndProcedure',
+    ].join('\n'), 'CommonModules/Members/Ext/Module.bsl');
+
+    assert.deepEqual(parsed.procedures.map(procedure => procedure.name), ['Configure']);
+    assert.deepEqual(callNames(parsed), ['RealCall']);
+    assert.deepEqual(parsed.diagnostics, []);
+  });
+
   test('supports Russian and English declarations, including multiline exports', () => {
     const russian = parseFile(
       readFixture('parser', 'CommonModules', 'Русский Синтаксис', 'Ext', 'Module.bsl'),
