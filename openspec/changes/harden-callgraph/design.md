@@ -2,8 +2,8 @@
 
 ## Status
 
-Implemented locally through sections 1–8. Release verification, push, tag, and
-published-install checks remain open in section 9 of `tasks.md`.
+Completed and released as `v1.1.0` on 2026-09-05. All implementation and release
+tasks are verified; evidence is recorded in section 9 of `tasks.md`.
 
 ## Goal
 

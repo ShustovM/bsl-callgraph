@@ -87,11 +87,26 @@ relevant focused tests before each commit.
 
 ## 9. Release 1.1.0
 
-- [ ] Run the full release gates from a clean clone.
-- [ ] Verify live behavior against the configured large BSL tree and compare
+- [x] Run the full release gates from a clean clone.
+- [x] Verify live behavior against the configured large BSL tree and compare
   results with the captured baseline.
-- [ ] Review the public diff for personal paths, secrets, internal hostnames, and
+- [x] Review the public diff for personal paths, secrets, internal hostnames, and
   generated artifacts.
-- [ ] Merge/push the approved changes, create annotated tag `v1.1.0`, and publish
+- [x] Merge/push the approved changes, create annotated tag `v1.1.0`, and publish
   a GitHub Release with migration and limitation notes.
-- [ ] Verify anonymous clone/install and MCP startup from the published tag.
+- [x] Verify anonymous clone/install and MCP startup from the published tag.
+
+## Completion evidence — 2026-09-05
+
+- PR: https://github.com/ShustovM/bsl-callgraph/pull/1
+- Release: https://github.com/ShustovM/bsl-callgraph/releases/tag/v1.1.0
+- Annotated tag targets merge commit `a6bb885be512b249b07a7cce82c4a38b410b08fd`.
+- 51 tests pass; Node.js 22/24 Ubuntu and Node.js 22 Windows CI are green.
+- Release-commit CI: https://github.com/ShustovM/bsl-callgraph/actions/runs/33952997068
+- Release-commit CodeQL: https://github.com/ShustovM/bsl-callgraph/actions/runs/33952997052
+- Dependency audit: zero vulnerabilities. CodeQL: zero open alerts.
+- Inspected 21-file tarball installed and initialized successfully with eight
+  MCP tools. Anonymous clone of the published tag, `npm ci`, and MCP startup
+  also succeeded.
+- Aggregate large-corpus results and measured limitations are recorded in
+  `docs/performance.md`; private source and paths were not committed.
