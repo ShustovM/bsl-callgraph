@@ -1,200 +1,332 @@
 'use strict';
 
-// BSL keywords that look like calls but aren't
-const BSL_KEYWORDS = new Set([
-  'если', 'иначеесли', 'тогда', 'иначе', 'конецесли',
-  'пока', 'цикл', 'конеццикла',
-  'для', 'каждого', 'из', 'по',
-  'попытка', 'исключение', 'вызватьисключение', 'конецпопытки',
-  'возврат', 'прервать', 'продолжить',
-  'новый', 'не', 'и', 'или',
-  'процедура', 'функция', 'конецпроцедуры', 'конецфункции', 'экспорт',
-  'перем', 'знч', 'typeof',
-  'истина', 'ложь', 'неопределено', 'null', 'undefined',
-  // English
-  'if', 'elseif', 'then', 'else', 'endif',
-  'while', 'do', 'enddo',
-  'for', 'each', 'in', 'to', 'enddo',
-  'try', 'except', 'raise', 'endtry',
-  'return', 'break', 'continue',
-  'new', 'not', 'and', 'or',
-  'procedure', 'function', 'endprocedure', 'endfunction', 'export',
-  'var', 'val', 'typeof',
-  'true', 'false', 'undefined', 'null',
+const { lexBsl } = require('./lexer');
+const {
+  foldIdentifier,
+  moduleIdentityFromPath,
+  procedureId,
+} = require('./module-identity');
+
+const DECLARATION_KEYWORDS = new Map([
+  ['процедура', 'procedure'],
+  ['procedure', 'procedure'],
+  ['функция', 'function'],
+  ['function', 'function'],
 ]);
 
-// Procedure/function declaration (Russian + English, case-insensitive)
-const RE_PROC_DECL = /^[ \t]*(Процедура|Функция|Procedure|Function)[ \t]+([а-яёА-ЯЁa-zA-Z_][а-яёА-ЯЁa-zA-Z0-9_]*)[ \t]*\(/i;
-const RE_PROC_EXPORT = /\)[ \t]*(Экспорт|Export)[ \t]*$/i;
-const RE_PROC_END = /^[ \t]*(КонецПроцедуры|КонецФункции|EndProcedure|EndFunction)[ \t]*;?[ \t]*$/i;
+const END_KEYWORDS = new Map([
+  ['конецпроцедуры', 'procedure'],
+  ['endprocedure', 'procedure'],
+  ['конецфункции', 'function'],
+  ['endfunction', 'function'],
+]);
 
-// Identifier character class (Cyrillic + Latin)
-const IDENT_START = /[а-яёА-ЯЁa-zA-Z_]/u;
-const IDENT_CONT = /[а-яёА-ЯЁa-zA-Z0-9_]/u;
+const EXPORT_KEYWORDS = new Set(['экспорт', 'export']);
 
-// Strip single-line BSL comment, respecting string literals
-function stripComment(line) {
-  let inString = false;
-  for (let i = 0; i < line.length; i++) {
-    if (line[i] === '"') {
-      inString = !inString;
-    } else if (!inString && line[i] === '/' && line[i + 1] === '/') {
-      return line.slice(0, i);
-    }
-  }
-  return line;
-}
+// Language statements and operators which can syntactically precede `(` but
+// never represent a procedure/function call.
+const BSL_KEYWORDS = new Set([
+  'если', 'иначеесли', 'тогда', 'иначе', 'конецесли',
+  'пока', 'цикл', 'конеццикла', 'для', 'каждого', 'из', 'по',
+  'попытка', 'исключение', 'вызватьисключение', 'конецпопытки',
+  'возврат', 'прервать', 'продолжить', 'новый', 'не', 'и', 'или',
+  'процедура', 'функция', 'конецпроцедуры', 'конецфункции', 'экспорт',
+  'асинх',
+  'перем', 'знч', 'знач', 'истина', 'ложь', 'неопределено', 'null',
+  'if', 'elseif', 'then', 'else', 'endif', 'while', 'do', 'enddo',
+  'for', 'each', 'in', 'to', 'try', 'except', 'raise', 'endtry',
+  'return', 'break', 'continue', 'new', 'not', 'and', 'or',
+  'procedure', 'function', 'endprocedure', 'endfunction', 'export',
+  'async',
+  'var', 'val', 'true', 'false', 'undefined', 'typeof',
+]);
 
-// Replace string literal contents with spaces (keeps structure intact)
-function stripStrings(line) {
-  let result = '';
-  let inString = false;
-  for (let i = 0; i < line.length; i++) {
-    if (line[i] === '"') {
-      if (inString && line[i + 1] === '"') {
-        // Escaped double-quote inside string
-        result += '  ';
-        i++;
-      } else {
-        inString = !inString;
-        result += '"';
-      }
-    } else if (inString) {
-      result += ' ';
-    } else {
-      result += line[i];
-    }
-  }
-  return result;
-}
-
-// Extract all call references from a single cleaned line
-// Returns array of { calleeName, calleeModule (or null) }
-function extractCallsFromLine(line) {
-  const calls = [];
-  let i = 0;
-
-  while (i < line.length) {
-    // Skip non-identifier chars
-    if (!IDENT_START.test(line[i])) {
-      i++;
-      continue;
-    }
-
-    // Check what's before this identifier
-    const charBefore = i > 0 ? line[i - 1] : '';
-    const precededByDot = charBefore === '.';
-
-    // Read identifier
-    const start = i;
-    while (i < line.length && IDENT_CONT.test(line[i])) i++;
-    const ident = line.slice(start, i);
-
-    // Skip whitespace
-    let j = i;
-    while (j < line.length && (line[j] === ' ' || line[j] === '\t')) j++;
-
-    if (line[j] === '(') {
-      // It's a call
-      if (precededByDot) {
-        // This is the method part of Module.Method() — find module by walking back
-        // Module was the identifier before the dot
-        let dotPos = start - 1; // position of '.'
-        let modEnd = dotPos;
-        let modStart = modEnd - 1;
-        while (modStart > 0 && IDENT_CONT.test(line[modStart - 1])) modStart--;
-        if (modStart >= 0 && modEnd > modStart) {
-          const mod = line.slice(modStart, modEnd);
-          if (!BSL_KEYWORDS.has(mod.toLowerCase())) {
-            calls.push({ calleeName: ident, calleeModule: mod });
-          }
-        }
-      } else {
-        // Direct call
-        if (!BSL_KEYWORDS.has(ident.toLowerCase())) {
-          calls.push({ calleeName: ident, calleeModule: null });
-        }
-      }
-      i = j + 1;
-    } else if (line[j] === '.') {
-      // Could be Module.Method — skip for now, will be handled when we hit Method
-      i = j + 1;
-    } else {
-      i = j;
-    }
-  }
-
-  return calls;
-}
-
-// Extract module name from 1C file path convention
-// CommonModules\ModuleName\Ext\Module.bsl → ModuleName
-// Documents\DocName\Ext\ObjectModule.bsl → DocName
 function moduleNameFromPath(filePath) {
-  const normalized = filePath.replace(/\\/g, '/');
-  const parts = normalized.split('/');
-
-  // Find 'Ext' segment
-  const extIdx = parts.findIndex(p => p.toLowerCase() === 'ext');
-  if (extIdx >= 2) {
-    return parts[extIdx - 1];
-  }
-
-  // Fallback: use filename without extension
-  const fname = parts[parts.length - 1];
-  return fname.replace(/\.bsl$/i, '');
+  return moduleIdentityFromPath(filePath).displayName;
 }
 
-// Parse BSL source text, returns { procedures, calls }
-// procedures: [{ name, kind, isExport, line, module, file }]
-// calls: [{ callerName, callerModule, callLine, calleeName, calleeModule }]
+function nextSignificant(tokens, startIndex) {
+  let index = startIndex;
+  while (tokens[index]?.type === 'newline') index++;
+  return index;
+}
+
+function previousSignificant(tokens, startIndex) {
+  let index = startIndex;
+  while (tokens[index]?.type === 'newline') index--;
+  return index;
+}
+
+function isStructuralKeyword(tokens, index) {
+  // BSL statements need not occupy separate lines. These reserved words are
+  // structural everywhere except after a member-access dot, which may itself
+  // occur on the preceding line.
+  return tokens[previousSignificant(tokens, index - 1)]?.value !== '.';
+}
+
+function diagnostic(code, message, token, extra = {}) {
+  return {
+    code,
+    severity: 'warning',
+    message,
+    line: token?.line || 1,
+    column: token?.column || 1,
+    ...(token?.location ? { location: token.location } : {}),
+    ...extra,
+  };
+}
+
+function findClosingParenthesis(tokens, openIndex) {
+  let depth = 0;
+  for (let index = openIndex; index < tokens.length; index++) {
+    const token = tokens[index];
+    if (token.type !== 'symbol') continue;
+    if (token.value === '(') depth++;
+    if (token.value === ')') {
+      depth--;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function appendParenthesisDiagnostics(tokens, diagnostics) {
+  const stack = [];
+  for (const token of tokens) {
+    if (token.type !== 'symbol') continue;
+    if (token.value === '(') {
+      stack.push(token);
+    } else if (token.value === ')') {
+      if (stack.length > 0) stack.pop();
+      else diagnostics.push(diagnostic(
+        'unmatched-parenthesis',
+        'Closing parenthesis has no matching opening parenthesis.',
+        token
+      ));
+    }
+  }
+  for (const token of stack) {
+    diagnostics.push(diagnostic(
+      'unclosed-parenthesis',
+      'Opening parenthesis is not closed.',
+      token
+    ));
+  }
+}
+
+function parseDeclaration(tokens, index, moduleIdentity, filePath, diagnostics) {
+  const keywordToken = tokens[index];
+  const kind = DECLARATION_KEYWORDS.get(foldIdentifier(keywordToken.value));
+  const nameIndex = nextSignificant(tokens, index + 1);
+  const nameToken = tokens[nameIndex];
+
+  if (!nameToken || nameToken.type !== 'identifier') {
+    diagnostics.push(diagnostic(
+      'malformed-declaration',
+      'Procedure/function declaration has no valid name.',
+      keywordToken
+    ));
+    return { nextIndex: index + 1, procedure: null };
+  }
+
+  const openIndex = nextSignificant(tokens, nameIndex + 1);
+  if (tokens[openIndex]?.value !== '(') {
+    diagnostics.push(diagnostic(
+      'malformed-declaration',
+      `Declaration of ${nameToken.value} has no parameter list.`,
+      nameToken
+    ));
+    return { nextIndex: nameIndex + 1, procedure: null };
+  }
+
+  const closeIndex = findClosingParenthesis(tokens, openIndex);
+  if (closeIndex < 0) {
+    diagnostics.push(diagnostic(
+      'unclosed-declaration',
+      `Parameter list of ${nameToken.value} is not closed.`,
+      tokens[openIndex],
+      { procedureName: nameToken.value }
+    ));
+  }
+
+  const effectiveCloseIndex = closeIndex < 0 ? tokens.length - 1 : closeIndex;
+  const exportIndex = nextSignificant(tokens, effectiveCloseIndex + 1);
+  const isExport = EXPORT_KEYWORDS.has(foldIdentifier(tokens[exportIndex]?.value));
+  const endToken = tokens[isExport ? exportIndex : effectiveCloseIndex] || nameToken;
+  const procId = procedureId(moduleIdentity.id, nameToken.value);
+  const procedure = {
+    id: procId,
+    name: nameToken.value,
+    normalizedName: foldIdentifier(nameToken.value),
+    kind,
+    isExport,
+    line: keywordToken.line,
+    column: keywordToken.column,
+    endLine: endToken.endLine,
+    endColumn: endToken.endColumn,
+    location: {
+      start: keywordToken.location.start,
+      end: endToken.location.end,
+    },
+    module: moduleIdentity.displayName,
+    moduleDisplayName: moduleIdentity.displayName,
+    moduleAliases: moduleIdentity.aliases,
+    moduleId: moduleIdentity.id,
+    moduleKind: moduleIdentity.moduleKind,
+    objectKind: moduleIdentity.objectKind,
+    file: filePath,
+  };
+
+  return {
+    nextIndex: isExport ? exportIndex + 1 : effectiveCloseIndex + 1,
+    procedure,
+  };
+}
+
+function callCandidate(tokens, index, currentProcedure, occurrence) {
+  const nameToken = tokens[index];
+  const openIndex = nextSignificant(tokens, index + 1);
+  if (tokens[openIndex]?.value !== '(') return null;
+  if (BSL_KEYWORDS.has(foldIdentifier(nameToken.value))) return null;
+
+  const dotIndex = previousSignificant(tokens, index - 1);
+  let receiver = null;
+  let complexReceiver = false;
+  if (tokens[dotIndex]?.value === '.') {
+    const receiverIndex = previousSignificant(tokens, dotIndex - 1);
+    const beforeReceiverIndex = previousSignificant(tokens, receiverIndex - 1);
+    if (tokens[receiverIndex]?.type === 'identifier'
+        && tokens[beforeReceiverIndex]?.value !== '.') {
+      receiver = tokens[receiverIndex].value;
+    } else {
+      // A call result, indexed value, or property chain is an expression, not
+      // a bare module name. Do not turn it into an unqualified call or resolve
+      // it through just the final property name.
+      receiver = '<expression>';
+      complexReceiver = true;
+    }
+  }
+
+  const candidate = {
+    callerId: currentProcedure.id,
+    calleeName: nameToken.value,
+    calleeModule: null,
+    receiver,
+    callLine: nameToken.line,
+    callColumn: nameToken.column,
+    occurrence,
+  };
+  if (complexReceiver) candidate.receiverKind = 'complex';
+  return candidate;
+}
+
+/**
+ * Parse one BSL module. Calls are intentionally unresolved candidates; use
+ * resolveCalls()/resolveCallCandidates() after all files have been parsed.
+ */
 function parseFile(content, filePath) {
-  const lines = content.split(/\r?\n/);
+  const moduleIdentity = moduleIdentityFromPath(filePath);
+  const lexed = lexBsl(content);
+  const diagnostics = [...lexed.diagnostics];
   const procedures = [];
   const calls = [];
-  const moduleName = moduleNameFromPath(filePath);
+  const tokens = lexed.tokens;
+  let currentProcedure = null;
+  let occurrence = 0;
+  let index = 0;
 
-  let currentProc = null;
-
-  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
-    const lineNum = lineIdx + 1;
-    const rawLine = lines[lineIdx];
-    const cleanLine = stripStrings(stripComment(rawLine));
-
-    // Procedure/function end
-    if (RE_PROC_END.test(cleanLine)) {
-      currentProc = null;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (token.type !== 'identifier') {
+      index++;
       continue;
     }
 
-    // Procedure/function declaration
-    const declMatch = RE_PROC_DECL.exec(cleanLine);
-    if (declMatch) {
-      const kind = /процедура|procedure/i.test(declMatch[1]) ? 'procedure' : 'function';
-      const name = declMatch[2];
-      // Check for export — may be on same line or continuation, check full rawLine
-      const isExport = RE_PROC_EXPORT.test(rawLine.replace(/\/\/.*$/, ''));
-      currentProc = { name, kind, isExport, line: lineNum, module: moduleName, file: filePath };
-      procedures.push(currentProc);
+    const normalized = foldIdentifier(token.value);
+    if (DECLARATION_KEYWORDS.has(normalized) && isStructuralKeyword(tokens, index)) {
+      if (currentProcedure) {
+        diagnostics.push(diagnostic(
+          'unclosed-procedure',
+          `Procedure/function ${currentProcedure.name} has no matching end before the next declaration.`,
+          token,
+          { procedureName: currentProcedure.name }
+        ));
+      }
+      const declaration = parseDeclaration(
+        tokens,
+        index,
+        moduleIdentity,
+        filePath,
+        diagnostics
+      );
+      if (declaration.procedure) {
+        procedures.push(declaration.procedure);
+        currentProcedure = declaration.procedure;
+      } else {
+        currentProcedure = null;
+      }
+      index = Math.max(index + 1, declaration.nextIndex);
       continue;
     }
 
-    // Extract calls within procedure/function body
-    if (currentProc) {
-      const lineCalls = extractCallsFromLine(cleanLine);
-      for (const c of lineCalls) {
-        calls.push({
-          callerName: currentProc.name,
-          callerModule: moduleName,
-          callLine: lineNum,
-          calleeName: c.calleeName,
-          calleeModule: c.calleeModule,
-        });
+    if (END_KEYWORDS.has(normalized) && isStructuralKeyword(tokens, index)) {
+      if (!currentProcedure) {
+        diagnostics.push(diagnostic(
+          'unmatched-procedure-end',
+          `Unexpected ${token.value} without an open procedure/function.`,
+          token
+        ));
+      } else if (END_KEYWORDS.get(normalized) !== currentProcedure.kind) {
+        diagnostics.push(diagnostic(
+          'mismatched-procedure-end',
+          `${token.value} does not match ${currentProcedure.kind} ${currentProcedure.name}.`,
+          token,
+          { procedureName: currentProcedure.name }
+        ));
+      }
+      currentProcedure = null;
+      index++;
+      continue;
+    }
+
+    if (currentProcedure) {
+      const candidate = callCandidate(
+        tokens,
+        index,
+        currentProcedure,
+        occurrence
+      );
+      if (candidate) {
+        calls.push(candidate);
+        occurrence++;
       }
     }
+    index++;
   }
 
-  return { procedures, calls, module: moduleName };
+  if (currentProcedure) {
+    diagnostics.push(diagnostic(
+      'unclosed-procedure',
+      `Procedure/function ${currentProcedure.name} has no matching end.`,
+      tokens.at(-1),
+      { procedureName: currentProcedure.name }
+    ));
+  }
+
+  appendParenthesisDiagnostics(tokens, diagnostics);
+
+  return {
+    procedures,
+    calls,
+    diagnostics,
+    module: moduleIdentity.displayName,
+    moduleId: moduleIdentity.id,
+    moduleIdentity,
+  };
 }
 
-module.exports = { parseFile, moduleNameFromPath };
+module.exports = {
+  BSL_KEYWORDS,
+  moduleNameFromPath,
+  parseFile,
+};
