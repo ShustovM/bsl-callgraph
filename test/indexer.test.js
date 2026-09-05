@@ -13,7 +13,9 @@ const { CallGraphStore } = require('../src/store');
 function temporaryDirectory(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'bsl-callgraph-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  return directory;
+  // Windows runners may expose TEMP through a short path or directory alias.
+  // Match the canonical path used by the production indexer and read mocks.
+  return fs.realpathSync.native(directory);
 }
 
 function indexResult(name = 'Run') {
